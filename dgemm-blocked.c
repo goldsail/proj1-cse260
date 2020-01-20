@@ -6,13 +6,15 @@
  *    Support CBLAS interface
  */
 
+#include <stdio.h>  // For: perror
+
 const char* dgemm_desc = "Multilevel blocked dgemm.";
 
 #if !defined(BLOCK_SIZE)
 #define BLOCK_SIZE 37
-#define L1_BLOCK_SIZE 12
-#define L2_BLOCK_SIZE 37
-#define L3_BLOCK_SIZE 400
+#define L1_BLOCK_SIZE 34
+#define L2_BLOCK_SIZE 102
+#define L3_BLOCK_SIZE 1122
 // #define BLOCK_SIZE 719
 #endif
 
@@ -88,6 +90,14 @@ static void do_block_2(int lda, int M, int N, int K, double* A, double* B, doubl
  * where A, B, and C are lda-by-lda matrices stored in row-major order
  * On exit, A and B maintain their input values. */
 void square_dgemm(int lda, double* A, double* B, double* C) {
+    static int print_guard = 1;
+    if (print_guard) {
+        print_guard = 0;
+        printf("L1 Block Size: %d\n", L1_BLOCK_SIZE);
+        printf("L2 Block Size: %d\n", L2_BLOCK_SIZE);
+        printf("L3 Block Size: %d\n", L3_BLOCK_SIZE);
+    }
+
 #ifdef TRANSPOSE
   for (int i = 0; i < lda; ++i)
     for (int j = i+1; j < lda; ++j) {
