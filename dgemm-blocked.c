@@ -7,6 +7,9 @@
  */
 
 #include <stdio.h>  // For: perror
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
 
 const char* dgemm_desc = "Multilevel blocked dgemm.";
 
@@ -41,6 +44,58 @@ static void do_block(int lda, int M, int N, int K, double* A, double* B, double*
     }
 }
 
+#ifdef LAYOUT
+void copy_layout(int lda, int M, int N, double *src, double *dst) {
+    int pos = 0;
+    for (int i = 0; i < M; i++) {
+        memcpy(dst + pos, src + i * lda, N * sizeof(double));
+        pos += N;
+    }
+}
+
+static void copy_back_layout(int lda, int M, int N, double *src, double *dst) {
+    int pos = 0;
+    for (int i = 0; i < M; i++) {
+        memcpy(dst + i * lda, src + pos, N * sizeof(double));
+        pos += N;
+    }
+}
+
+static void do_block_layout(int lda, int M, int N, int K, double *A, double *B, double *C) {
+    assert(M <= L1_BLOCK_SIZE);
+    assert(N <= L1_BLOCK_SIZE);
+    assert(K <= L1_BLOCK_SIZE);
+    double As[L1_BLOCK_SIZE * L1_BLOCK_SIZE];
+    double Bs[L1_BLOCK_SIZE * L1_BLOCK_SIZE];
+    double Cs[L1_BLOCK_SIZE * L1_BLOCK_SIZE];
+
+    copy_layout(lda, M, K, A, As);
+
+    #ifdef TRANSPOSE
+    copy_layout(lda, N, K, B, Bs);
+    #else
+    copy_layout(lda, K, N, B, Bs);
+    #endif
+    copy_layout(lda, M, N, C, Cs);
+    for (int i = 0; i < M; ++i)
+        /* For each column j of B */
+        for (int j = 0; j < N; ++j)
+        {
+            /* Compute C(i,j) */
+            double cij = Cs[i*N+j];
+            for (int k = 0; k < K; ++k)
+            #ifdef TRANSPOSE
+                cij += As[i*K+k] * Bs[j*K+k];
+            #else
+                cij += As[i*K+k] * Bs[k*N+j];
+            #endif
+            Cs[i*N+j] = cij;
+        }
+    copy_back_layout(lda, M, N, Cs, C);
+}
+#endif
+
+
 static void do_block_1(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each row i of A */
   for (int i = 0; i < M; i += L1_BLOCK_SIZE)
@@ -55,10 +110,18 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
 	int K2 = min (L1_BLOCK_SIZE, K-k);
 
 	/* Perform individual block dgemm */
+#ifdef LAYOUT
+#ifdef TRANSPOSE
+	do_block_layout(lda, M2, N2, K2, A + i*lda + k, B + j*lda + k, C + i*lda + j);
+#else
+	do_block_layout(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+#endif
+#else
 #ifdef TRANSPOSE
 	do_block(lda, M2, N2, K2, A + i*lda + k, B + j*lda + k, C + i*lda + j);
 #else
 	do_block(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+#endif
 #endif
       }
 }
