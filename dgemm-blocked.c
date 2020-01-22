@@ -47,6 +47,20 @@ static void do_block(int lda, int M, int N, int K, double* A, double* B, double*
   }
 }
 
+static void do_block_2x4(int lda, int K, double* A, double* B, double* C) {
+  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
+  for (int kk = 0; kk < K; kk++) {
+    register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
+    register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
+    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+
+    c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
+    c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
+  }
+  _mm256_storeu_pd(C, c00_c01_c02_c03);
+  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+}
 
 static void do_block_1x4(int lda, int K, double* A, double* B, double* C) {
   register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
@@ -74,7 +88,39 @@ static void do_block_simd_remainder(int lda, int K, int N_remain, double* A, dou
   }
 }
 
-static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
+static void do_block_simd_2x4(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  /* For each two rows i of A */
+  for (int i = 0; i < M; i += 2) {
+    int M2 = min(2, M - i);
+    if (M2 == 2) {
+      /* For each VLEN columns of B */
+      for (int j = 0; j < N; j += VECTOR_SIZE) {
+        int N2 = min(VECTOR_SIZE, N-j); /* Correct block dimensions if block "goes off edge of" the matrix */
+        if (N2 == VECTOR_SIZE) {
+          // Multiples of VECTOR_SIZE
+          do_block_2x4(lda, K, A + i*lda, B + j, C + i*lda + j);
+        } else {
+          // Less than VECTOR_SIZE
+          do_block_simd_remainder(lda, K, N2, A + i*lda, B + j, C + i*lda + j);
+          do_block_simd_remainder(lda, K, N2, A + (i+1)*lda, B + j, C + (i+1)*lda + j);
+        }
+      }
+    } else {
+      for (int j = 0; j < N; j += VECTOR_SIZE) {
+        int N2 = min(VECTOR_SIZE, N-j); /* Correct block dimensions if block "goes off edge of" the matrix */
+        if (N2 == VECTOR_SIZE) {
+          // Multiples of VECTOR_SIZE
+          do_block_1x4(lda, K, A + i*lda, B + j, C + i*lda + j);
+        } else {
+          // Less than VECTOR_SIZE
+          do_block_simd_remainder(lda, K, N2, A + i*lda, B + j, C + i*lda + j);
+        }
+      }
+    }
+  }
+}
+
+static void do_block_simd_1x4(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each row i of A */
   for (int i = 0; i < M; i++) {
     /* For each VLEN columns of B */
@@ -168,11 +214,15 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
         #ifdef TRANSPOSE
         	do_block(lda, M2, N2, K2, A + i*lda + k, B + j*lda + k, C + i*lda + j);
         #else
-          #ifdef SIMD
+          #ifdef SIMD_1x4
             // No transpose if use SIMD as we are using register tiling to access memory in row major order
-            do_block_simd(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+            do_block_simd_1x4(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
           #else
-        	  do_block(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+            #ifdef SIMD_2x4
+              do_block_simd_2x4(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+            #else
+              do_block(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+            #endif
           #endif
         #endif
       }
