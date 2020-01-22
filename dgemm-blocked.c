@@ -47,6 +47,48 @@ static void do_block(int lda, int M, int N, int K, double* A, double* B, double*
   }
 }
 
+static void do_block_4x4(int lda, int K, double* A, double* B, double* C) {
+  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
+  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
+  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + lda*3);
+  for (int kk = 0; kk < K; kk++) {
+    register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
+    register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
+    register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
+    register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
+    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+
+    c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
+    c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
+    c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b, c20_c21_c22_c23);
+    c30_c31_c32_c33 = _mm256_fmadd_pd(a3x, b, c30_c31_c32_c33);
+  }
+  _mm256_storeu_pd(C, c00_c01_c02_c03);
+  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  _mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
+}
+
+static void do_block_3x4(int lda, int K, double* A, double* B, double* C) {
+  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
+  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
+  for (int kk = 0; kk < K; kk++) {
+    register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
+    register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
+    register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
+    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+
+    c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
+    c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
+    c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b, c20_c21_c22_c23);
+  }
+  _mm256_storeu_pd(C, c00_c01_c02_c03);
+  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+}
+
 static void do_block_2x4(int lda, int K, double* A, double* B, double* C) {
   register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
   register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
@@ -88,6 +130,72 @@ static void do_block_simd_remainder(int lda, int K, int N_remain, double* A, dou
   }
 }
 
+#ifdef SIMD_4x4
+static void do_block_simd_4x4(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  /* For each two rows i of A */
+  for (int i = 0; i < M; i += 4) {
+    int M2 = min(4, M - i);
+    switch (M2) {
+      case 4:
+        for (int j = 0; j < N; j += VECTOR_SIZE) {
+          int N2 = min(VECTOR_SIZE, N-j); /* Correct block dimensions if block "goes off edge of" the matrix */
+          if (N2 == VECTOR_SIZE) {
+            // Multiples of VECTOR_SIZE
+            do_block_4x4(lda, K, A + i*lda, B + j, C + i*lda + j);
+          } else {
+            // Less than VECTOR_SIZE
+            do_block_simd_remainder(lda, K, N2, A + i*lda, B + j, C + i*lda + j);
+            do_block_simd_remainder(lda, K, N2, A + (i+1)*lda, B + j, C + (i+1)*lda + j);
+            do_block_simd_remainder(lda, K, N2, A + (i+2)*lda, B + j, C + (i+2)*lda + j);
+            do_block_simd_remainder(lda, K, N2, A + (i+3)*lda, B + j, C + (i+3)*lda + j);
+          }
+        }
+        break;
+      case 3:
+        for (int j = 0; j < N; j += VECTOR_SIZE) {
+          int N2 = min(VECTOR_SIZE, N-j); /* Correct block dimensions if block "goes off edge of" the matrix */
+          if (N2 == VECTOR_SIZE) {
+            // Multiples of VECTOR_SIZE
+            do_block_3x4(lda, K, A + i*lda, B + j, C + i*lda + j);
+          } else {
+            // Less than VECTOR_SIZE
+            do_block_simd_remainder(lda, K, N2, A + i*lda, B + j, C + i*lda + j);
+            do_block_simd_remainder(lda, K, N2, A + (i+1)*lda, B + j, C + (i+1)*lda + j);
+            do_block_simd_remainder(lda, K, N2, A + (i+2)*lda, B + j, C + (i+2)*lda + j);
+          }
+        }
+        break;
+      case 2:
+        for (int j = 0; j < N; j += VECTOR_SIZE) {
+          int N2 = min(VECTOR_SIZE, N-j); /* Correct block dimensions if block "goes off edge of" the matrix */
+          if (N2 == VECTOR_SIZE) {
+            // Multiples of VECTOR_SIZE
+            do_block_2x4(lda, K, A + i*lda, B + j, C + i*lda + j);
+          } else {
+            // Less than VECTOR_SIZE
+            do_block_simd_remainder(lda, K, N2, A + i*lda, B + j, C + i*lda + j);
+            do_block_simd_remainder(lda, K, N2, A + (i+1)*lda, B + j, C + (i+1)*lda + j);
+          }
+        }
+        break;
+      case 1:
+        for (int j = 0; j < N; j += VECTOR_SIZE) {
+          int N2 = min(VECTOR_SIZE, N-j); /* Correct block dimensions if block "goes off edge of" the matrix */
+          if (N2 == VECTOR_SIZE) {
+            // Multiples of VECTOR_SIZE
+            do_block_1x4(lda, K, A + i*lda, B + j, C + i*lda + j);
+          } else {
+            // Less than VECTOR_SIZE
+            do_block_simd_remainder(lda, K, N2, A + i*lda, B + j, C + i*lda + j);
+          }
+        }
+        break;
+    }
+  }
+}
+#endif
+
+#ifdef SIMD_2x4
 static void do_block_simd_2x4(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each two rows i of A */
   for (int i = 0; i < M; i += 2) {
@@ -119,7 +227,9 @@ static void do_block_simd_2x4(int lda, int M, int N, int K, double* A, double* B
     }
   }
 }
+#endif
 
+#ifdef SIMD_1x4
 static void do_block_simd_1x4(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each row i of A */
   for (int i = 0; i < M; i++) {
@@ -136,6 +246,7 @@ static void do_block_simd_1x4(int lda, int M, int N, int K, double* A, double* B
     }
   }
 }
+#endif
 
 #ifdef LAYOUT
 void copy_layout(int lda, int M, int N, double *src, double *dst) {
@@ -221,7 +332,11 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
             #ifdef SIMD_2x4
               do_block_simd_2x4(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
             #else
-              do_block(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+              #ifdef SIMD_4x4
+                do_block_simd_4x4(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+              #else
+                do_block(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+              #endif
             #endif
           #endif
         #endif
