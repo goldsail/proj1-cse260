@@ -1,1 +1,1 @@
-MY_OPT="-O4" "-DSIMD_4x4"
+MY_OPT="-O4" "-DSIMD_5x4"
