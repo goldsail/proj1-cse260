@@ -26,6 +26,40 @@ const char* dgemm_desc = "Multilevel blocked dgemm.";
 
 #define min(a,b) (((a)<(b))?(a):(b))
 
+#ifdef CACHELAYOUT
+int dealias(int lda) {
+  // heavy cache aliasing if lda near multiples of 128
+  // pad some zeros to avoid this
+  if (lda % 128 == 0) return lda + 2;
+  if ((lda - 1) % 128 == 0) return lda + 1;
+  return lda;
+}
+
+static void copy_layout(int lda, double *A, double *B, double *C, int ldn, double **a, double **b, double **c) {
+  *a = (double*)malloc(sizeof(double) * lda * ldn);
+  *b = (double*)malloc(sizeof(double) * lda * ldn);
+  *c = (double*)malloc(sizeof(double) * lda * ldn);
+  for (int i = 0; i < lda; i++) {
+    memcpy(*a + i * ldn, A + i * lda, sizeof(double) * lda);
+    memset(*a + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
+    memcpy(*b + i * ldn, B + i * lda, sizeof(double) * lda);
+    memset(*b + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
+    memcpy(*c + i * ldn, C + i * lda, sizeof(double) * lda);
+    memset(*c + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
+  }
+}
+
+static void copy_back_layout(int ldn, double **a, double **b, double **c, int lda, double *C) {
+  for (int i = 0; i < lda; i++) {
+    memcpy(C + i * lda, *c + i * ldn, sizeof(double) * lda);
+  }
+  free(*a);
+  free(*b);
+  free(*c);
+  *a = *b = *c = NULL;
+}
+#endif
+
 /* This auxiliary subroutine performs a smaller dgemm operation
  *  C := C + A * B
  * where C is M-by-N, A is M-by-K, and B is K-by-N. */
@@ -1928,13 +1962,26 @@ static void do_block_2(int lda, int M, int N, int K, double* A, double* B, doubl
  * where A, B, and C are lda-by-lda matrices stored in row-major order
  * On exit, A and B maintain their input values. */
 void square_dgemm(int lda, double* A, double* B, double* C) {
-  static int print_guard = 1;
-  if (print_guard) {
-      print_guard = 0;
-      printf("L1 Block Size: %d\n", L1_BLOCK_SIZE);
-      printf("L2 Block Size: %d\n", L2_BLOCK_SIZE);
-      printf("L3 Block Size: %d\n", L3_BLOCK_SIZE);
+
+  #ifdef CACHELAYOUT
+  double *a, *b, *c;
+  int ldn = dealias(lda);
+  if (ldn != lda) {
+    copy_layout(lda, A, B, C, ldn, &a, &b, &c);
+    for (int i = 0; i < lda; i += L3_BLOCK_SIZE) {
+      for (int j = 0; j < lda; j += L3_BLOCK_SIZE) {
+        for (int k = 0; k < lda; k += L3_BLOCK_SIZE) {
+          int M = min (L3_BLOCK_SIZE, lda-i);
+          int N = min (L3_BLOCK_SIZE, lda-j);
+          int K = min (L3_BLOCK_SIZE, lda-k);
+          do_block_2(ldn, M, N, K, a + i*ldn + k, b + k*ldn + j, c + i*ldn + j);
+        }
+      }
+    }
+    copy_back_layout(ldn, &a, &b, &c, lda, C);
+    return;
   }
+  #endif
 
   #ifdef TRANSPOSE
     for (int i = 0; i < lda; ++i)
