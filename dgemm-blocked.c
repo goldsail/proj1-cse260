@@ -30,20 +30,30 @@ const char* dgemm_desc = "Multilevel blocked dgemm.";
 int dealias(int lda) {
   // heavy cache aliasing if lda near multiples of 128
   // pad some zeros to avoid this
-  if (lda % 128 == 0) return lda + 2;
-  if ((lda - 1) % 128 == 0) return lda + 1;
-  return lda;
+  if (lda % 128 == 127) return lda + 5;
+  if (lda % 128 == 0) return lda + 4;
+  return (1 + (lda - 1) / 4) * 4; // ceil(lda) to multiple of 4
 }
 
 static void copy_layout(int lda, double *A, double *B, double *C, int ldn, double **a, double **b, double **c) {
+#ifdef ALIGN
+  posix_memalign(a, sizeof(double) * VECTOR_SIZE, sizeof(double) * lda * ldn);
+  posix_memalign(b, sizeof(double) * VECTOR_SIZE, sizeof(double) * lda * ldn);
+  posix_memalign(c, sizeof(double) * VECTOR_SIZE, sizeof(double) * lda * ldn);
+#else
   *a = (double*)malloc(sizeof(double) * lda * ldn);
   *b = (double*)malloc(sizeof(double) * lda * ldn);
   *c = (double*)malloc(sizeof(double) * lda * ldn);
+#endif
   for (int i = 0; i < lda; i++) {
     memcpy(*a + i * ldn, A + i * lda, sizeof(double) * lda);
     memset(*a + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
+  }
+  for (int i = 0; i < lda; i++) {
     memcpy(*b + i * ldn, B + i * lda, sizeof(double) * lda);
     memset(*b + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
+  }
+  for (int i = 0; i < lda; i++) {
     memcpy(*c + i * ldn, C + i * lda, sizeof(double) * lda);
     memset(*c + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
   }
@@ -80,16 +90,27 @@ static void do_block(int lda, int M, int N, int K, double* A, double* B, double*
     }
   }
 }
+#ifdef ALIGN
+#define My_mm256_loadu_pd(C) _mm256_load_pd(C)
+#else
+#define My_mm256_loadu_pd(C) _mm256_loadu_pd(C)
+#endif
+
+#ifdef ALIGN
+#define My_mm256_storeu_pd(C, R) _mm256_store_pd(C, R)
+#else
+#define My_mm256_storeu_pd(C, R) _mm256_storeu_pd(C, R)
+#endif
 
 static void do_block_8x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C + lda*0);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda*1);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + lda*3);
-  register __m256d c40_c41_c42_c43 = _mm256_loadu_pd(C + lda*4);
-  register __m256d c50_c51_c52_c53 = _mm256_loadu_pd(C + lda*5);
-  register __m256d c60_c61_c62_c63 = _mm256_loadu_pd(C + lda*6);
-  register __m256d c70_c71_c72_c73 = _mm256_loadu_pd(C + lda*7);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C + lda*0);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda*1);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + lda*2);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + lda*3);
+  register __m256d c40_c41_c42_c43 = My_mm256_loadu_pd(C + lda*4);
+  register __m256d c50_c51_c52_c53 = My_mm256_loadu_pd(C + lda*5);
+  register __m256d c60_c61_c62_c63 = My_mm256_loadu_pd(C + lda*6);
+  register __m256d c70_c71_c72_c73 = My_mm256_loadu_pd(C + lda*7);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
@@ -99,7 +120,7 @@ static void do_block_8x4(int lda, int K, double* A, double* B, double* C) {
     register __m256d a5x = _mm256_broadcast_sd(A + kk + 5*lda);
     register __m256d a6x = _mm256_broadcast_sd(A + kk + 6*lda);
     register __m256d a7x = _mm256_broadcast_sd(A + kk + 7*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
@@ -110,24 +131,24 @@ static void do_block_8x4(int lda, int K, double* A, double* B, double* C) {
     c60_c61_c62_c63 = _mm256_fmadd_pd(a6x, b, c60_c61_c62_c63);
     c70_c71_c72_c73 = _mm256_fmadd_pd(a7x, b, c70_c71_c72_c73);
   }
-  _mm256_storeu_pd(C + lda*0, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda*1, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
-  _mm256_storeu_pd(C + lda*5, c50_c51_c52_c53);
-  _mm256_storeu_pd(C + lda*6, c60_c61_c62_c63);
-  _mm256_storeu_pd(C + lda*7, c70_c71_c72_c73);
+  My_mm256_storeu_pd(C + lda*0, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda*1, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
+  My_mm256_storeu_pd(C + lda*5, c50_c51_c52_c53);
+  My_mm256_storeu_pd(C + lda*6, c60_c61_c62_c63);
+  My_mm256_storeu_pd(C + lda*7, c70_c71_c72_c73);
 }
 
 static void do_block_7x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C + lda*0);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda*1);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + lda*3);
-  register __m256d c40_c41_c42_c43 = _mm256_loadu_pd(C + lda*4);
-  register __m256d c50_c51_c52_c53 = _mm256_loadu_pd(C + lda*5);
-  register __m256d c60_c61_c62_c63 = _mm256_loadu_pd(C + lda*6);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C + lda*0);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda*1);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + lda*2);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + lda*3);
+  register __m256d c40_c41_c42_c43 = My_mm256_loadu_pd(C + lda*4);
+  register __m256d c50_c51_c52_c53 = My_mm256_loadu_pd(C + lda*5);
+  register __m256d c60_c61_c62_c63 = My_mm256_loadu_pd(C + lda*6);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
@@ -136,7 +157,7 @@ static void do_block_7x4(int lda, int K, double* A, double* B, double* C) {
     register __m256d a4x = _mm256_broadcast_sd(A + kk + 4*lda);
     register __m256d a5x = _mm256_broadcast_sd(A + kk + 5*lda);
     register __m256d a6x = _mm256_broadcast_sd(A + kk + 6*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
@@ -146,22 +167,22 @@ static void do_block_7x4(int lda, int K, double* A, double* B, double* C) {
     c50_c51_c52_c53 = _mm256_fmadd_pd(a5x, b, c50_c51_c52_c53);
     c60_c61_c62_c63 = _mm256_fmadd_pd(a6x, b, c60_c61_c62_c63);
   }
-  _mm256_storeu_pd(C + lda*0, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda*1, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
-  _mm256_storeu_pd(C + lda*5, c50_c51_c52_c53);
-  _mm256_storeu_pd(C + lda*6, c60_c61_c62_c63);
+  My_mm256_storeu_pd(C + lda*0, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda*1, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
+  My_mm256_storeu_pd(C + lda*5, c50_c51_c52_c53);
+  My_mm256_storeu_pd(C + lda*6, c60_c61_c62_c63);
 }
 
 static void do_block_6x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + lda*3);
-  register __m256d c40_c41_c42_c43 = _mm256_loadu_pd(C + lda*4);
-  register __m256d c50_c51_c52_c53 = _mm256_loadu_pd(C + lda*5);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + lda*2);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + lda*3);
+  register __m256d c40_c41_c42_c43 = My_mm256_loadu_pd(C + lda*4);
+  register __m256d c50_c51_c52_c53 = My_mm256_loadu_pd(C + lda*5);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
@@ -169,7 +190,7 @@ static void do_block_6x4(int lda, int K, double* A, double* B, double* C) {
     register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
     register __m256d a4x = _mm256_broadcast_sd(A + kk + 4*lda);
     register __m256d a5x = _mm256_broadcast_sd(A + kk + 5*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
@@ -178,27 +199,27 @@ static void do_block_6x4(int lda, int K, double* A, double* B, double* C) {
     c40_c41_c42_c43 = _mm256_fmadd_pd(a4x, b, c40_c41_c42_c43);
     c50_c51_c52_c53 = _mm256_fmadd_pd(a5x, b, c50_c51_c52_c53);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
-  _mm256_storeu_pd(C + lda*5, c50_c51_c52_c53);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
+  My_mm256_storeu_pd(C + lda*5, c50_c51_c52_c53);
 }
 
 static void do_block_5x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + lda*3);
-  register __m256d c40_c41_c42_c43 = _mm256_loadu_pd(C + lda*4);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + lda*2);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + lda*3);
+  register __m256d c40_c41_c42_c43 = My_mm256_loadu_pd(C + lda*4);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
     register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
     register __m256d a4x = _mm256_broadcast_sd(A + kk + 4*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
@@ -206,99 +227,99 @@ static void do_block_5x4(int lda, int K, double* A, double* B, double* C) {
     c30_c31_c32_c33 = _mm256_fmadd_pd(a3x, b, c30_c31_c32_c33);
     c40_c41_c42_c43 = _mm256_fmadd_pd(a4x, b, c40_c41_c42_c43);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + lda*4, c40_c41_c42_c43);
 }
 
 static void do_block_4x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + lda*3);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + lda*2);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + lda*3);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
     register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
     c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b, c20_c21_c22_c23);
     c30_c31_c32_c33 = _mm256_fmadd_pd(a3x, b, c30_c31_c32_c33);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + lda*3, c30_c31_c32_c33);
 }
 
 static void do_block_3x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + lda*2);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + lda*2);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
     c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b, c20_c21_c22_c23);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda*2, c20_c21_c22_c23);
 }
 
 static void do_block_2x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
 
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b, c10_c11_c12_c13);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
 }
 
 static void do_block_1x4(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
-    register __m256d b = _mm256_loadu_pd(B + kk*lda);
+    register __m256d b = My_mm256_loadu_pd(B + kk*lda);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b, c00_c01_c02_c03);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
 }
 
 static void do_block_5x8(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + 2*lda);
-  register __m256d c24_c25_c26_c27 = _mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + 3*lda);
-  register __m256d c34_c35_c36_c37 = _mm256_loadu_pd(C + 3*lda + VECTOR_SIZE);
-  register __m256d c40_c41_c42_c43 = _mm256_loadu_pd(C + 4*lda);
-  register __m256d c44_c45_c46_c47 = _mm256_loadu_pd(C + 4*lda + VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + 2*lda);
+  register __m256d c24_c25_c26_c27 = My_mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + 3*lda);
+  register __m256d c34_c35_c36_c37 = My_mm256_loadu_pd(C + 3*lda + VECTOR_SIZE);
+  register __m256d c40_c41_c42_c43 = My_mm256_loadu_pd(C + 4*lda);
+  register __m256d c44_c45_c46_c47 = My_mm256_loadu_pd(C + 4*lda + VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
     register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
     register __m256d a4x = _mm256_broadcast_sd(A + kk + 4*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b0, c10_c11_c12_c13);
     c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b0, c20_c21_c22_c23);
@@ -310,34 +331,34 @@ static void do_block_5x8(int lda, int K, double* A, double* B, double* C) {
     c34_c35_c36_c37 = _mm256_fmadd_pd(a3x, b1, c34_c35_c36_c37);
     c44_c45_c46_c47 = _mm256_fmadd_pd(a4x, b1, c44_c45_c46_c47);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
-  _mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
-  _mm256_storeu_pd(C + 3*lda, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + 3*lda + VECTOR_SIZE, c34_c35_c36_c37);
-  _mm256_storeu_pd(C + 4*lda, c40_c41_c42_c43);
-  _mm256_storeu_pd(C + 4*lda + VECTOR_SIZE, c44_c45_c46_c47);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
+  My_mm256_storeu_pd(C + 3*lda, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + 3*lda + VECTOR_SIZE, c34_c35_c36_c37);
+  My_mm256_storeu_pd(C + 4*lda, c40_c41_c42_c43);
+  My_mm256_storeu_pd(C + 4*lda + VECTOR_SIZE, c44_c45_c46_c47);
 }
 
 static void do_block_4x8(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + 2*lda);
-  register __m256d c24_c25_c26_c27 = _mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + 3*lda);
-  register __m256d c34_c35_c36_c37 = _mm256_loadu_pd(C + 3*lda + VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + 2*lda);
+  register __m256d c24_c25_c26_c27 = My_mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + 3*lda);
+  register __m256d c34_c35_c36_c37 = My_mm256_loadu_pd(C + 3*lda + VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
     register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b0, c10_c11_c12_c13);
     c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b0, c20_c21_c22_c23);
@@ -347,29 +368,29 @@ static void do_block_4x8(int lda, int K, double* A, double* B, double* C) {
     c24_c25_c26_c27 = _mm256_fmadd_pd(a2x, b1, c24_c25_c26_c27);
     c34_c35_c36_c37 = _mm256_fmadd_pd(a3x, b1, c34_c35_c36_c37);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
-  _mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
-  _mm256_storeu_pd(C + 3*lda, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + 3*lda + VECTOR_SIZE, c34_c35_c36_c37);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
+  My_mm256_storeu_pd(C + 3*lda, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + 3*lda + VECTOR_SIZE, c34_c35_c36_c37);
 }
 
 static void do_block_3x8(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + 2*lda);
-  register __m256d c24_c25_c26_c27 = _mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + 2*lda);
+  register __m256d c24_c25_c26_c27 = My_mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b0, c10_c11_c12_c13);
     c20_c21_c22_c23 = _mm256_fmadd_pd(a2x, b0, c20_c21_c22_c23);
@@ -377,70 +398,70 @@ static void do_block_3x8(int lda, int K, double* A, double* B, double* C) {
     c14_c15_c16_c17 = _mm256_fmadd_pd(a1x, b1, c14_c15_c16_c17);
     c24_c25_c26_c27 = _mm256_fmadd_pd(a2x, b1, c24_c25_c26_c27);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
-  _mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
 }
 
 static void do_block_2x8(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c10_c11_c12_c13 = _mm256_fmadd_pd(a1x, b0, c10_c11_c12_c13);
     c04_c05_c06_c07 = _mm256_fmadd_pd(a0x, b1, c04_c05_c06_c07);
     c14_c15_c16_c17 = _mm256_fmadd_pd(a1x, b1, c14_c15_c16_c17);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
 }
 
 static void do_block_1x8(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c04_c05_c06_c07 = _mm256_fmadd_pd(a0x, b1, c04_c05_c06_c07);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
 }
 
 static void do_block_4x12(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c08_c09_c10_c11 = _mm256_loadu_pd(C + 2*VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
-  register __m256d c18_c19_c110_c111 = _mm256_loadu_pd(C + lda + 2*VECTOR_SIZE);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + 2*lda);
-  register __m256d c24_c25_c26_c27 = _mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
-  register __m256d c28_c29_c210_c211 = _mm256_loadu_pd(C + 2*lda + 2*VECTOR_SIZE);
-  register __m256d c30_c31_c32_c33 = _mm256_loadu_pd(C + 3*lda);
-  register __m256d c34_c35_c36_c37 = _mm256_loadu_pd(C + 3*lda + VECTOR_SIZE);
-  register __m256d c38_c39_c310_c311 = _mm256_loadu_pd(C + 3*lda + 2*VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c08_c09_c10_c11 = My_mm256_loadu_pd(C + 2*VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c18_c19_c110_c111 = My_mm256_loadu_pd(C + lda + 2*VECTOR_SIZE);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + 2*lda);
+  register __m256d c24_c25_c26_c27 = My_mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
+  register __m256d c28_c29_c210_c211 = My_mm256_loadu_pd(C + 2*lda + 2*VECTOR_SIZE);
+  register __m256d c30_c31_c32_c33 = My_mm256_loadu_pd(C + 3*lda);
+  register __m256d c34_c35_c36_c37 = My_mm256_loadu_pd(C + 3*lda + VECTOR_SIZE);
+  register __m256d c38_c39_c310_c311 = My_mm256_loadu_pd(C + 3*lda + 2*VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
     register __m256d a3x = _mm256_broadcast_sd(A + kk + 3*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
-    register __m256d b2 = _mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b2 = My_mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c04_c05_c06_c07 = _mm256_fmadd_pd(a0x, b1, c04_c05_c06_c07);
     c08_c09_c10_c11 = _mm256_fmadd_pd(a0x, b2, c08_c09_c10_c11);
@@ -454,38 +475,38 @@ static void do_block_4x12(int lda, int K, double* A, double* B, double* C) {
     c34_c35_c36_c37 = _mm256_fmadd_pd(a3x, b1, c34_c35_c36_c37);
     c38_c39_c310_c311 = _mm256_fmadd_pd(a3x, b2, c38_c39_c310_c311);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c10_c11);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
-  _mm256_storeu_pd(C + lda + 2*VECTOR_SIZE, c18_c19_c110_c111);
-  _mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
-  _mm256_storeu_pd(C + 2*lda + 2*VECTOR_SIZE, c28_c29_c210_c211);
-  _mm256_storeu_pd(C + 3*lda, c30_c31_c32_c33);
-  _mm256_storeu_pd(C + 3*lda + VECTOR_SIZE, c34_c35_c36_c37);
-  _mm256_storeu_pd(C + 3*lda + 2*VECTOR_SIZE, c38_c39_c310_c311);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c10_c11);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C + lda + 2*VECTOR_SIZE, c18_c19_c110_c111);
+  My_mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
+  My_mm256_storeu_pd(C + 2*lda + 2*VECTOR_SIZE, c28_c29_c210_c211);
+  My_mm256_storeu_pd(C + 3*lda, c30_c31_c32_c33);
+  My_mm256_storeu_pd(C + 3*lda + VECTOR_SIZE, c34_c35_c36_c37);
+  My_mm256_storeu_pd(C + 3*lda + 2*VECTOR_SIZE, c38_c39_c310_c311);
 }
 
 
 static void do_block_3x12(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c08_c09_c10_c11 = _mm256_loadu_pd(C + 2*VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
-  register __m256d c18_c19_c110_c111 = _mm256_loadu_pd(C + lda + 2*VECTOR_SIZE);
-  register __m256d c20_c21_c22_c23 = _mm256_loadu_pd(C + 2*lda);
-  register __m256d c24_c25_c26_c27 = _mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
-  register __m256d c28_c29_c210_c211 = _mm256_loadu_pd(C + 2*lda + 2*VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c08_c09_c10_c11 = My_mm256_loadu_pd(C + 2*VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c18_c19_c110_c111 = My_mm256_loadu_pd(C + lda + 2*VECTOR_SIZE);
+  register __m256d c20_c21_c22_c23 = My_mm256_loadu_pd(C + 2*lda);
+  register __m256d c24_c25_c26_c27 = My_mm256_loadu_pd(C + 2*lda + VECTOR_SIZE);
+  register __m256d c28_c29_c210_c211 = My_mm256_loadu_pd(C + 2*lda + 2*VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
     register __m256d a2x = _mm256_broadcast_sd(A + kk + 2*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
-    register __m256d b2 = _mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b2 = My_mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c04_c05_c06_c07 = _mm256_fmadd_pd(a0x, b1, c04_c05_c06_c07);
     c08_c09_c10_c11 = _mm256_fmadd_pd(a0x, b2, c08_c09_c10_c11);
@@ -496,30 +517,30 @@ static void do_block_3x12(int lda, int K, double* A, double* B, double* C) {
     c24_c25_c26_c27 = _mm256_fmadd_pd(a2x, b1, c24_c25_c26_c27);
     c28_c29_c210_c211 = _mm256_fmadd_pd(a2x, b2, c28_c29_c210_c211);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c10_c11);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
-  _mm256_storeu_pd(C + lda + 2*VECTOR_SIZE, c18_c19_c110_c111);
-  _mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
-  _mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
-  _mm256_storeu_pd(C + 2*lda + 2*VECTOR_SIZE, c28_c29_c210_c211);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c10_c11);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C + lda + 2*VECTOR_SIZE, c18_c19_c110_c111);
+  My_mm256_storeu_pd(C + 2*lda, c20_c21_c22_c23);
+  My_mm256_storeu_pd(C + 2*lda + VECTOR_SIZE, c24_c25_c26_c27);
+  My_mm256_storeu_pd(C + 2*lda + 2*VECTOR_SIZE, c28_c29_c210_c211);
 }
 
 static void do_block_2x12(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c08_c09_c10_c11 = _mm256_loadu_pd(C + 2*VECTOR_SIZE);
-  register __m256d c10_c11_c12_c13 = _mm256_loadu_pd(C + lda);
-  register __m256d c14_c15_c16_c17 = _mm256_loadu_pd(C + lda + VECTOR_SIZE);
-  register __m256d c18_c19_c110_c111 = _mm256_loadu_pd(C + lda + 2*VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c08_c09_c10_c11 = My_mm256_loadu_pd(C + 2*VECTOR_SIZE);
+  register __m256d c10_c11_c12_c13 = My_mm256_loadu_pd(C + lda);
+  register __m256d c14_c15_c16_c17 = My_mm256_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m256d c18_c19_c110_c111 = My_mm256_loadu_pd(C + lda + 2*VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
     register __m256d a1x = _mm256_broadcast_sd(A + kk + 1*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
-    register __m256d b2 = _mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b2 = My_mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c04_c05_c06_c07 = _mm256_fmadd_pd(a0x, b1, c04_c05_c06_c07);
     c08_c09_c10_c11 = _mm256_fmadd_pd(a0x, b2, c08_c09_c10_c11);
@@ -527,30 +548,30 @@ static void do_block_2x12(int lda, int K, double* A, double* B, double* C) {
     c14_c15_c16_c17 = _mm256_fmadd_pd(a1x, b1, c14_c15_c16_c17);
     c18_c19_c110_c111 = _mm256_fmadd_pd(a1x, b2, c18_c19_c110_c111);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c10_c11);
-  _mm256_storeu_pd(C + lda, c10_c11_c12_c13);
-  _mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
-  _mm256_storeu_pd(C + lda + 2*VECTOR_SIZE, c18_c19_c110_c111);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c10_c11);
+  My_mm256_storeu_pd(C + lda, c10_c11_c12_c13);
+  My_mm256_storeu_pd(C + lda + VECTOR_SIZE, c14_c15_c16_c17);
+  My_mm256_storeu_pd(C + lda + 2*VECTOR_SIZE, c18_c19_c110_c111);
 }
 
 static void do_block_1x12(int lda, int K, double* A, double* B, double* C) {
-  register __m256d c00_c01_c02_c03 = _mm256_loadu_pd(C);
-  register __m256d c04_c05_c06_c07 = _mm256_loadu_pd(C + VECTOR_SIZE);
-  register __m256d c08_c09_c010_c011 = _mm256_loadu_pd(C + 2*VECTOR_SIZE);
+  register __m256d c00_c01_c02_c03 = My_mm256_loadu_pd(C);
+  register __m256d c04_c05_c06_c07 = My_mm256_loadu_pd(C + VECTOR_SIZE);
+  register __m256d c08_c09_c010_c011 = My_mm256_loadu_pd(C + 2*VECTOR_SIZE);
   for (int kk = 0; kk < K; kk++) {
     register __m256d a0x = _mm256_broadcast_sd(A + kk + 0*lda);
-    register __m256d b0 = _mm256_loadu_pd(B + kk*lda);
-    register __m256d b1 = _mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
-    register __m256d b2 = _mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
+    register __m256d b0 = My_mm256_loadu_pd(B + kk*lda);
+    register __m256d b1 = My_mm256_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m256d b2 = My_mm256_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
     c00_c01_c02_c03 = _mm256_fmadd_pd(a0x, b0, c00_c01_c02_c03);
     c04_c05_c06_c07 = _mm256_fmadd_pd(a0x, b1, c04_c05_c06_c07);
     c08_c09_c010_c011 = _mm256_fmadd_pd(a0x, b2, c08_c09_c010_c011);
   }
-  _mm256_storeu_pd(C, c00_c01_c02_c03);
-  _mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
-  _mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c010_c011);
+  My_mm256_storeu_pd(C, c00_c01_c02_c03);
+  My_mm256_storeu_pd(C + VECTOR_SIZE, c04_c05_c06_c07);
+  My_mm256_storeu_pd(C + 2*VECTOR_SIZE, c08_c09_c010_c011);
 }
 
 static void do_block_simd_remainder(int lda, int K, int N_remain, double* A, double* B, double* C) {
@@ -1966,7 +1987,7 @@ void square_dgemm(int lda, double* A, double* B, double* C) {
   #ifdef CACHELAYOUT
   double *a, *b, *c;
   int ldn = dealias(lda);
-  if (ldn != lda) {
+  if (1) {
     copy_layout(lda, A, B, C, ldn, &a, &b, &c);
     for (int i = 0; i < lda; i += L3_BLOCK_SIZE) {
       for (int j = 0; j < lda; j += L3_BLOCK_SIZE) {
