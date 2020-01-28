@@ -1577,10 +1577,10 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_4x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_4x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+2)*lda, B + j + 2*VECTOR_SIZE, C + (i+2)*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+3)*lda, B + j + 2*VECTOR_SIZE, C + (i+3)*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+2)*lda, B + j + 2*VECTOR_SIZE, C + (i+2)*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+3)*lda, B + j + 2*VECTOR_SIZE, C + (i+3)*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_4x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1609,9 +1609,9 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_3x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_3x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+2)*lda, B + j + 2*VECTOR_SIZE, C + (i+2)*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+2)*lda, B + j + 2*VECTOR_SIZE, C + (i+2)*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_3x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1638,8 +1638,8 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_2x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_2x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_2x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1663,7 +1663,7 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_1x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1697,9 +1697,9 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_3x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_3x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+2)*lda, B + j + 2*VECTOR_SIZE, C + (i+2)*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+2)*lda, B + j + 2*VECTOR_SIZE, C + (i+2)*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_3x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1726,8 +1726,8 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_2x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_2x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_2x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1751,7 +1751,7 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_1x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1785,8 +1785,8 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_2x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_2x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + (i+1)*lda, B + j + 2*VECTOR_SIZE, C + (i+1)*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_2x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1810,7 +1810,7 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
           do_block_1x12(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
           do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-          do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
+          do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
         } else if (N2 == 2 * VECTOR_SIZE) {
           do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
         } else if (N2 > VECTOR_SIZE) {
@@ -1842,7 +1842,7 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
         do_block_1x12(lda, K, A + i*lda, B + j, C + i*lda + j);
       } else if (N2 > 2 * VECTOR_SIZE && N2 < 3 * VECTOR_SIZE) {
         do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
-        do_block_simd_remainder(lda, K, N2 - VECTOR_SIZE, A + i*lda, B + j + VECTOR_SIZE, C + i*lda + j + VECTOR_SIZE);
+        do_block_simd_remainder(lda, K, N2 - 2*VECTOR_SIZE, A + i*lda, B + j + 2*VECTOR_SIZE, C + i*lda + j + 2*VECTOR_SIZE);
       } else if (N2 == 2 * VECTOR_SIZE) {
         do_block_1x8(lda, K, A + i*lda, B + j, C + i*lda + j);
       } else if (N2 > VECTOR_SIZE) {
