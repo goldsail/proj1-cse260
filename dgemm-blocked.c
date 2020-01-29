@@ -15,8 +15,9 @@
 
 const char* dgemm_desc = "Multilevel blocked dgemm.";
 
-#if !defined(BLOCK_SIZE)
+#ifndef BLOCK_SIZE
 #define BLOCK_SIZE 37
+#endif
 #ifndef L1_BLOCK_SIZE_M
 #define L1_BLOCK_SIZE_M 32
 #endif
@@ -47,7 +48,6 @@ const char* dgemm_desc = "Multilevel blocked dgemm.";
 
 #define VECTOR_SIZE 4
 // #define BLOCK_SIZE 719
-#endif
 
 #define min(a,b) (((a)<(b))?(a):(b))
 
@@ -57,7 +57,11 @@ int dealias(int lda) {
   // pad some zeros to avoid this
   if (lda % 128 == 127) return lda + 5;
   if (lda % 128 == 0) return lda + 4;
+  #ifdef ALIGN
   return (1 + (lda - 1) / 4) * 4; // ceil(lda) to multiple of 4
+  #else
+  return lda;
+  #endif
 }
 
 static void copy_layout(int lda, double *A, double *B, double *C, int ldn, double **a, double **b, double **c) {
@@ -2012,7 +2016,7 @@ void square_dgemm(int lda, double* A, double* B, double* C) {
   #ifdef CACHELAYOUT
   double *a, *b, *c;
   int ldn = dealias(lda);
-  if (1) {
+  if (ldn != lda) {
     copy_layout(lda, A, B, C, ldn, &a, &b, &c);
     for (int i = 0; i < lda; i += L3_BLOCK_SIZE_M) {
       for (int j = 0; j < lda; j += L3_BLOCK_SIZE_N) {
