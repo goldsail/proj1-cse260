@@ -51,6 +51,10 @@ const char* dgemm_desc = "Multilevel blocked dgemm.";
 
 #define min(a,b) (((a)<(b))?(a):(b))
 
+#ifdef SIMD_3x12_C
+#define THRESHOLD 130
+#endif
+
 #if defined(CACHELAYOUT) || defined(SIMD_3x12_D)
 
 int dealias(int lda) {
@@ -58,6 +62,9 @@ int dealias(int lda) {
   // pad some zeros to avoid this
   #ifdef SIMD_3x12_D
     return (1 + (lda - 1) / 12) * 12;
+  #endif
+  #ifdef SIMD_3x12_C
+    if (lda > THRESHOLD) return (1 + (lda - 1) / 12) * 12;
   #endif
   if (lda % 128 == 127) return lda + 5;
   if (lda % 128 == 0) return lda + 4;
@@ -1728,7 +1735,7 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
 }
 #endif
 
-#ifdef SIMD_3x12
+#if defined(SIMD_3x12) || defined(SIMD_3x12_C)
 static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each two rows i of A */
   for (int i = 0; i < M; i+=3) {
@@ -1818,6 +1825,25 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
 
 #ifdef SIMD_3x12_D
 static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  /* For each two rows i of A */
+  if (M % 3 != 0 || N % (3 * VECTOR_SIZE) != 0) {
+    printf("M=%d, N=%d\n", M, N);
+  }
+  assert(M % 3 == 0);
+  assert(N % (3 * VECTOR_SIZE) == 0);
+  int M2 = 3;
+  int N2 = 3 * VECTOR_SIZE;
+  for (int i = 0; i < M; i+=3) {
+    /* For each VLEN columns of B */
+    for (int j = 0; j < N; j += 3 * VECTOR_SIZE) {
+        do_block_3x12(lda, K, A + i*lda, B + j, C + i*lda + j);
+    }
+  }
+}
+#endif
+
+#ifdef SIMD_3x12_C
+static void do_block_simd_D(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each two rows i of A */
   if (M % 3 != 0 || N % (3 * VECTOR_SIZE) != 0) {
     printf("M=%d, N=%d\n", M, N);
@@ -2018,7 +2044,12 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
             // No transpose if use SIMD as we are using register tiling to access memory in row major order
             do_block_simd(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
           #else
+            #if defined(SIMD_3x12_C)
+              if (lda > THRESHOLD) do_block_simd_D(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+              else do_block_simd(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+            #else
             do_block(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
+            #endif
           #endif
         #endif
       }
@@ -2066,7 +2097,7 @@ void square_dgemm(int lda, double* A, double* B, double* C) {
   int ldn = dealias(lda);
   if (ldn != lda) {
     copy_layout(lda, A, B, C, ldn, &a, &b, &c);
-    #ifdef SIMD_3x12_D
+    #if defined(SIMD_3x12_D) || defined(SIMD_3x12_C)
     for (int i = 0; i < ldn; i += L3_BLOCK_SIZE_M) {
       for (int j = 0; j < ldn; j += L3_BLOCK_SIZE_N) {
         for (int k = 0; k < ldn; k += L3_BLOCK_SIZE_K) {
