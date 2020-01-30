@@ -1,0 +1,21 @@
+#!/usr/bin/python3
+
+import csv
+from collections import defaultdict
+import matplotlib.pyplot as plt
+import numpy as np
+
+N = 10
+data = defaultdict(list)
+for i in range(N):
+    with open('data%d.txt' % (i + 1)) as input:
+        reader = csv.reader(input, delimiter='\t')
+        for row in reader:
+            data[int(row[0])].append(float(row[1]))
+
+labels, values = data.keys(), [np.mean(x) for x in data.values()]
+labels, values = zip(*sorted(zip(labels, values)))
+plt.plot(labels, values)
+plt.xlabel('Square matrix size')
+plt.ylabel('Average throughput (GF/s)')
+plt.savefig('data.png')
