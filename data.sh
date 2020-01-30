@@ -1,5 +1,5 @@
 #!/bin/bash
-AVX=3x12
+AVX=3x12_D
 for L1M in 30
 do
 for L1N in 36

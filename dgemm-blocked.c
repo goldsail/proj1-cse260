@@ -67,7 +67,7 @@ int dealias(int lda) {
   return lda;
 }
 
-double buffer[3*2500*2500];
+static double buffer[3*2500*2500];
 
 static void copy_layout(int lda, double *A, double *B, double *C, int ldn, double **a, double **b, double **c) {
 #ifdef ALIGN
