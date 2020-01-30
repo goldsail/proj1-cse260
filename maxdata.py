@@ -20,7 +20,7 @@ if __name__ == "__main__":
     # Print max data to file
     file = open("data.txt", "w")
     for n in data:
-        file.write(str(n) + "\t" + str(data[n]))
+        file.write(str(n) + "\t" + str(data[n]) + "\n")
     file.close()
     sum = 0
     for n in data:
