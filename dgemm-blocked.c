@@ -51,40 +51,54 @@ const char* dgemm_desc = "Multilevel blocked dgemm.";
 
 #define min(a,b) (((a)<(b))?(a):(b))
 
-#ifdef CACHELAYOUT
+#if defined(CACHELAYOUT) || defined(SIMD_3x12_D)
+
 int dealias(int lda) {
   // heavy cache aliasing if lda near multiples of 128
   // pad some zeros to avoid this
+  #ifdef SIMD_3x12_D
+    return (1 + (lda - 1) / 12) * 12;
+  #endif
   if (lda % 128 == 127) return lda + 5;
   if (lda % 128 == 0) return lda + 4;
   #ifdef ALIGN
-  return (1 + (lda - 1) / 4) * 4; // ceil(lda) to multiple of 4
-  #else
-  return lda;
+    return (1 + (lda - 1) / 4) * 4; // ceil(lda) to multiple of 4
   #endif
+  return lda;
 }
+
+double buffer[3*2500*2500];
 
 static void copy_layout(int lda, double *A, double *B, double *C, int ldn, double **a, double **b, double **c) {
 #ifdef ALIGN
-  posix_memalign(a, sizeof(double) * VECTOR_SIZE, sizeof(double) * lda * ldn);
-  posix_memalign(b, sizeof(double) * VECTOR_SIZE, sizeof(double) * lda * ldn);
-  posix_memalign(c, sizeof(double) * VECTOR_SIZE, sizeof(double) * lda * ldn);
+  posix_memalign(a, sizeof(double) * VECTOR_SIZE, sizeof(double) * ldn * ldn);
+  posix_memalign(b, sizeof(double) * VECTOR_SIZE, sizeof(double) * ldn * ldn);
+  posix_memalign(c, sizeof(double) * VECTOR_SIZE, sizeof(double) * ldn * ldn);
 #else
-  *a = (double*)malloc(sizeof(double) * lda * ldn);
-  *b = (double*)malloc(sizeof(double) * lda * ldn);
-  *c = (double*)malloc(sizeof(double) * lda * ldn);
+  *a = buffer + 0 * ldn * ldn;
+  *b = buffer + 1 * ldn * ldn;
+  *c = buffer + 2 * ldn * ldn;
 #endif
   for (int i = 0; i < lda; i++) {
     memcpy(*a + i * ldn, A + i * lda, sizeof(double) * lda);
     memset(*a + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
   }
+  for (int i = lda; i < ldn; i++) {
+    memset(*a + i * ldn, 0, sizeof(double) * ldn);
+  }
   for (int i = 0; i < lda; i++) {
     memcpy(*b + i * ldn, B + i * lda, sizeof(double) * lda);
     memset(*b + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
   }
+  for (int i = lda; i < ldn; i++) {
+    memset(*b + i * ldn, 0, sizeof(double) * ldn);
+  }
   for (int i = 0; i < lda; i++) {
     memcpy(*c + i * ldn, C + i * lda, sizeof(double) * lda);
     memset(*c + i * ldn + lda, 0, sizeof(double) * (ldn - lda));
+  }
+  for (int i = lda; i < ldn; i++) {
+    memset(*c + i * ldn, 0, sizeof(double) * ldn);
   }
 }
 
@@ -92,10 +106,12 @@ static void copy_back_layout(int ldn, double **a, double **b, double **c, int ld
   for (int i = 0; i < lda; i++) {
     memcpy(C + i * lda, *c + i * ldn, sizeof(double) * lda);
   }
+  #ifdef ALIGN
   free(*a);
   free(*b);
   free(*c);
   *a = *b = *c = NULL;
+  #endif
 }
 #endif
 
@@ -1800,6 +1816,25 @@ static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, do
 }
 #endif
 
+#ifdef SIMD_3x12_D
+static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  /* For each two rows i of A */
+  if (M % 3 != 0 || N % (3 * VECTOR_SIZE) != 0) {
+    printf("M=%d, N=%d\n", M, N);
+  }
+  assert(M % 3 == 0);
+  assert(N % (3 * VECTOR_SIZE) == 0);
+  int M2 = 3;
+  int N2 = 3 * VECTOR_SIZE;
+  for (int i = 0; i < M; i+=3) {
+    /* For each VLEN columns of B */
+    for (int j = 0; j < N; j += 3 * VECTOR_SIZE) {
+        do_block_3x12(lda, K, A + i*lda, B + j, C + i*lda + j);
+    }
+  }
+}
+#endif
+
 #ifdef SIMD_2x12
 static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
   /* For each two rows i of A */
@@ -1942,6 +1977,13 @@ static void do_block_layout(int lda, int M, int N, int K, double *A, double *B, 
 
 
 static void do_block_1(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  #ifdef SIMD_3x12_D
+  if (M % 3 != 0 || N % 12 != 0) {
+    printf("1, M=%d, N=%d\n", M, N);
+  }
+  #endif
+
+
   /* For each row i of A */
   for (int i = 0; i < M; i += L1_BLOCK_SIZE_M) {
     /* For each block-column of B */
@@ -1971,7 +2013,7 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
           || defined(SIMD_7x4) || defined(SIMD_8x4) \
           || defined(SIMD_1x8) || defined(SIMD_2x8) || defined(SIMD_3x8) \
           || defined(SIMD_4x8) || defined(SIMD_5x8) \
-          || defined(SIMD_1x12) || defined(SIMD_2x12) || defined(SIMD_3x12) \
+          || defined(SIMD_1x12) || defined(SIMD_2x12) || defined(SIMD_3x12) || defined(SIMD_3x12_D) \
           || defined(SIMD_4x12)
             // No transpose if use SIMD as we are using register tiling to access memory in row major order
             do_block_simd(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
@@ -1985,6 +2027,12 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
 }
 
 static void do_block_2(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  #ifdef SIMD_3x12_D
+  if (M % 3 != 0 || N % 12 != 0) {
+    printf("2, M=%d, N=%d\n", M, N);
+  }
+  #endif
+
   /* For each row i of A */
   for (int i = 0; i < M; i += L2_BLOCK_SIZE_M) {
     /* For each block-column of B */
@@ -2018,6 +2066,18 @@ void square_dgemm(int lda, double* A, double* B, double* C) {
   int ldn = dealias(lda);
   if (ldn != lda) {
     copy_layout(lda, A, B, C, ldn, &a, &b, &c);
+    #ifdef SIMD_3x12_D
+    for (int i = 0; i < ldn; i += L3_BLOCK_SIZE_M) {
+      for (int j = 0; j < ldn; j += L3_BLOCK_SIZE_N) {
+        for (int k = 0; k < ldn; k += L3_BLOCK_SIZE_K) {
+          int M = min (L3_BLOCK_SIZE_M, ldn-i);
+          int N = min (L3_BLOCK_SIZE_N, ldn-j);
+          int K = min (L3_BLOCK_SIZE_K, ldn-k);
+          do_block_2(ldn, M, N, K, a + i*ldn + k, b + k*ldn + j, c + i*ldn + j);
+        }
+      }
+    }
+    #else
     for (int i = 0; i < lda; i += L3_BLOCK_SIZE_M) {
       for (int j = 0; j < lda; j += L3_BLOCK_SIZE_N) {
         for (int k = 0; k < lda; k += L3_BLOCK_SIZE_K) {
@@ -2028,6 +2088,7 @@ void square_dgemm(int lda, double* A, double* B, double* C) {
         }
       }
     }
+    #endif
     copy_back_layout(ldn, &a, &b, &c, lda, C);
     return;
   }
