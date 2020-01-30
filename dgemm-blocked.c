@@ -13,7 +13,7 @@
 #include <string.h>
 #include <assert.h>
 
-const char* dgemm_desc = "Multilevel blocked dgemm.";
+const char* dgemm_desc = "Optimized dgemm.";
 
 #ifndef BLOCK_SIZE
 #define BLOCK_SIZE 37
