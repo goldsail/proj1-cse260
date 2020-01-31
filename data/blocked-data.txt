@@ -1,0 +1,22 @@
+Description:	Optimized dgemm.
+
+Size: 32	Gflop/s: 22.5
+Size: 33	Gflop/s: 14.8
+Size: 63	Gflop/s: 15.5
+Size: 64	Gflop/s: 21.4
+Size: 65	Gflop/s: 17.3
+Size: 127	Gflop/s: 18.5
+Size: 128	Gflop/s: 18.9
+Size: 129	Gflop/s: 18.7
+Size: 255	Gflop/s: 20.6
+Size: 256	Gflop/s: 21.1
+Size: 257	Gflop/s: 21.4
+Size: 511	Gflop/s: 20.5
+Size: 512	Gflop/s: 20.7
+Size: 513	Gflop/s: 20.7
+Size: 1023	Gflop/s: 18.5
+Size: 1024	Gflop/s: 20
+Size: 1025	Gflop/s: 19.8
+Size: 2047	Gflop/s: 16.9
+Size: 2048	Gflop/s: 17
+Size: 2049	Gflop/s: 17.4
