@@ -8,7 +8,8 @@
 
 #include <stdio.h>  // For: perror
 #include <immintrin.h>
-#include <avx2intrin.h> // AVX2 Intrinsics
+// #include <avx2intrin.h> // AVX2 Intrinsics
+#include <immintrin.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -46,7 +47,11 @@ const char* dgemm_desc = "Optimized dgemm.";
 #define L3_BLOCK_SIZE_K 1056
 #endif
 
+#ifndef AVX512
 #define VECTOR_SIZE 4
+#else
+#define VECTOR_SIZE 8
+#endif
 // #define BLOCK_SIZE 719
 
 #define min(a,b) (((a)<(b))?(a):(b))
@@ -55,7 +60,7 @@ const char* dgemm_desc = "Optimized dgemm.";
 #define THRESHOLD 130
 #endif
 
-#if defined(CACHELAYOUT) || defined(SIMD_3x12_D)
+#if defined(CACHELAYOUT) || defined(SIMD_3x12_D) || defined(AVX512)
 
 int dealias(int lda) {
   // heavy cache aliasing if lda near multiples of 128
@@ -65,6 +70,9 @@ int dealias(int lda) {
   #endif
   #ifdef SIMD_3x12_C
     if (lda > THRESHOLD) return (1 + (lda - 1) / 12) * 12;
+  #endif
+  #ifdef AVX512
+    return (1 + (lda - 1) / 24) * 24;
   #endif
   if (lda % 128 == 127) return lda + 5;
   if (lda % 128 == 0) return lda + 4;
@@ -77,14 +85,13 @@ int dealias(int lda) {
 static double buffer[3*2500*2500];
 
 static void copy_layout(int lda, double *A, double *B, double *C, int ldn, double **a, double **b, double **c) {
-#ifdef ALIGN
-  posix_memalign(a, sizeof(double) * VECTOR_SIZE, sizeof(double) * ldn * ldn);
-  posix_memalign(b, sizeof(double) * VECTOR_SIZE, sizeof(double) * ldn * ldn);
-  posix_memalign(c, sizeof(double) * VECTOR_SIZE, sizeof(double) * ldn * ldn);
-#else
   *a = buffer + 0 * ldn * ldn;
   *b = buffer + 1 * ldn * ldn;
   *c = buffer + 2 * ldn * ldn;
+#ifdef ALIGN
+  while ((int)*a % 64 != 0) ++(*a);
+  while ((int)*b % 64 != 0) ++(*b);
+  while ((int)*c % 64 != 0) ++(*c);
 #endif
   for (int i = 0; i < lda; i++) {
     memcpy(*a + i * ldn, A + i * lda, sizeof(double) * lda);
@@ -113,12 +120,6 @@ static void copy_back_layout(int ldn, double **a, double **b, double **c, int ld
   for (int i = 0; i < lda; i++) {
     memcpy(C + i * lda, *c + i * ldn, sizeof(double) * lda);
   }
-  #ifdef ALIGN
-  free(*a);
-  free(*b);
-  free(*c);
-  *a = *b = *c = NULL;
-  #endif
 }
 #endif
 
@@ -144,14 +145,72 @@ static void do_block(int lda, int M, int N, int K, double* A, double* B, double*
 }
 #ifdef ALIGN
 #define My_mm256_loadu_pd(C) _mm256_load_pd(C)
+#define My_mm512_loadu_pd(C) _mm512_load_pd(C)
 #else
 #define My_mm256_loadu_pd(C) _mm256_loadu_pd(C)
+#define My_mm512_loadu_pd(C) _mm512_loadu_pd(C)
 #endif
 
 #ifdef ALIGN
 #define My_mm256_storeu_pd(C, R) _mm256_store_pd(C, R)
+#define My_mm512_storeu_pd(C, R) _mm512_store_pd(C, R)
 #else
 #define My_mm256_storeu_pd(C, R) _mm256_storeu_pd(C, R)
+#define My_mm512_storeu_pd(C, R) _mm512_storeu_pd(C, R)
+#endif
+
+#ifdef AVX512
+static void do_block_avx512_4x24(int lda, int K, double *A, double *B, double *C) {
+  register __m512d c00 = My_mm512_loadu_pd(C);
+  register __m512d c04 = My_mm512_loadu_pd(C + VECTOR_SIZE);
+  register __m512d c08 = My_mm512_loadu_pd(C + 2*VECTOR_SIZE);
+  register __m512d c10 = My_mm512_loadu_pd(C + lda);
+  register __m512d c14 = My_mm512_loadu_pd(C + lda + VECTOR_SIZE);
+  register __m512d c18 = My_mm512_loadu_pd(C + lda + 2*VECTOR_SIZE);
+  register __m512d c20 = My_mm512_loadu_pd(C + 2*lda);
+  register __m512d c24 = My_mm512_loadu_pd(C + 2*lda + VECTOR_SIZE);
+  register __m512d c28 = My_mm512_loadu_pd(C + 2*lda + 2*VECTOR_SIZE);
+  register __m512d c30 = My_mm512_loadu_pd(C + 3*lda);
+  register __m512d c34 = My_mm512_loadu_pd(C + 3*lda + VECTOR_SIZE);
+  register __m512d c38 = My_mm512_loadu_pd(C + 3*lda + 2*VECTOR_SIZE);
+  for (int kk = 0; kk < K; kk++) {
+    register __m128d a0 = _mm_load_pd1(A + kk + 0*lda);
+    register __m128d a1 = _mm_load_pd1(A + kk + 1*lda);
+    register __m128d a2 = _mm_load_pd1(A + kk + 2*lda);
+    register __m128d a3 = _mm_load_pd1(A + kk + 3*lda);
+    register __m512d a0x = _mm512_broadcastsd_pd(a0);
+    register __m512d a1x = _mm512_broadcastsd_pd(a1);
+    register __m512d a2x = _mm512_broadcastsd_pd(a2);
+    register __m512d a3x = _mm512_broadcastsd_pd(a3);
+    register __m512d b0 = My_mm512_loadu_pd(B + kk*lda);
+    register __m512d b1 = My_mm512_loadu_pd(B + kk*lda + VECTOR_SIZE);
+    register __m512d b2 = My_mm512_loadu_pd(B + kk*lda + 2*VECTOR_SIZE);
+    c00 = _mm512_fmadd_pd(a0x, b0, c00);
+    c04 = _mm512_fmadd_pd(a0x, b1, c04);
+    c08 = _mm512_fmadd_pd(a0x, b2, c08);
+    c10 = _mm512_fmadd_pd(a1x, b0, c10);
+    c14 = _mm512_fmadd_pd(a1x, b1, c14);
+    c18 = _mm512_fmadd_pd(a1x, b2, c18);
+    c20 = _mm512_fmadd_pd(a2x, b0, c20);
+    c24 = _mm512_fmadd_pd(a2x, b1, c24);
+    c28 = _mm512_fmadd_pd(a2x, b2, c28);
+    c30 = _mm512_fmadd_pd(a3x, b0, c30);
+    c34 = _mm512_fmadd_pd(a3x, b1, c34);
+    c38 = _mm512_fmadd_pd(a3x, b2, c38);
+  }
+  My_mm512_storeu_pd(C, c00);
+  My_mm512_storeu_pd(C + VECTOR_SIZE, c04);
+  My_mm512_storeu_pd(C + 2*VECTOR_SIZE, c08);
+  My_mm512_storeu_pd(C + lda, c10);
+  My_mm512_storeu_pd(C + lda + VECTOR_SIZE, c14);
+  My_mm512_storeu_pd(C + lda + 2*VECTOR_SIZE, c18);
+  My_mm512_storeu_pd(C + 2*lda, c20);
+  My_mm512_storeu_pd(C + 2*lda + VECTOR_SIZE, c24);
+  My_mm512_storeu_pd(C + 2*lda + 2*VECTOR_SIZE, c28);
+  My_mm512_storeu_pd(C + 3*lda, c30);
+  My_mm512_storeu_pd(C + 3*lda + VECTOR_SIZE, c34);
+  My_mm512_storeu_pd(C + 3*lda + 2*VECTOR_SIZE, c38);
+}
 #endif
 
 static void do_block_8x4(int lda, int K, double* A, double* B, double* C) {
@@ -636,6 +695,25 @@ static void do_block_simd_remainder(int lda, int K, int N_remain, double* A, dou
     C[n] = c;
   }
 }
+
+#ifdef AVX512
+static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
+  /* For each two rows i of A */
+  if (M % 4 != 0 || N % (3 * VECTOR_SIZE) != 0) {
+    printf("M=%d, N=%d\n", M, N);
+  }
+  assert(M % 4 == 0);
+  assert(N % (3 * VECTOR_SIZE) == 0);
+  int M2 = 4;
+  int N2 = 3 * VECTOR_SIZE;
+  for (int i = 0; i < M; i+=4) {
+    /* For each VLEN columns of B */
+    for (int j = 0; j < N; j += 3 * VECTOR_SIZE) {
+        do_block_avx512_4x24(lda, K, A + i*lda, B + j, C + i*lda + j);
+    }
+  }
+}
+#endif
 
 #ifdef SIMD_8x4
 static void do_block_simd(int lda, int M, int N, int K, double* A, double* B, double* C) {
@@ -2040,7 +2118,7 @@ static void do_block_1(int lda, int M, int N, int K, double* A, double* B, doubl
           || defined(SIMD_1x8) || defined(SIMD_2x8) || defined(SIMD_3x8) \
           || defined(SIMD_4x8) || defined(SIMD_5x8) \
           || defined(SIMD_1x12) || defined(SIMD_2x12) || defined(SIMD_3x12) || defined(SIMD_3x12_D) \
-          || defined(SIMD_4x12)
+          || defined(SIMD_4x12) || defined(AVX512)
             // No transpose if use SIMD as we are using register tiling to access memory in row major order
             do_block_simd(lda, M2, N2, K2, A + i*lda + k, B + k*lda + j, C + i*lda + j);
           #else
@@ -2092,12 +2170,14 @@ static void do_block_2(int lda, int M, int N, int K, double* A, double* B, doubl
  * On exit, A and B maintain their input values. */
 void square_dgemm(int lda, double* A, double* B, double* C) {
 
+  assert(lda > 0 && lda < 2400);
+
   #ifdef CACHELAYOUT
   double *a, *b, *c;
   int ldn = dealias(lda);
-  if (ldn != lda) {
+  if (1) {
     copy_layout(lda, A, B, C, ldn, &a, &b, &c);
-    #if defined(SIMD_3x12_D) || defined(SIMD_3x12_C)
+    #if defined(SIMD_3x12_D) || defined(SIMD_3x12_C) || defined(AVX512)
     for (int i = 0; i < ldn; i += L3_BLOCK_SIZE_M) {
       for (int j = 0; j < ldn; j += L3_BLOCK_SIZE_N) {
         for (int k = 0; k < ldn; k += L3_BLOCK_SIZE_K) {

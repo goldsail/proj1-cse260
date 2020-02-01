@@ -39,6 +39,8 @@ endif
 
 WARNINGS += -Wall -pedantic
 
+CFLAGS += -march=native
+
 # If you want to copy data blocks to contiguous storage
 # This applies to the hand code version
 ifeq ($(copy), 1)
@@ -67,7 +69,7 @@ endif
 OPTIMIZATION = $(MY_OPT)
 
 targets = benchmark-naive benchmark-blocked benchmark-blas
-objects = benchmark.o dgemm-naive.o dgemm-blocked.o dgemm-blas.o  
+objects = benchmark.o dgemm-naive.o dgemm-blocked.o dgemm-blas.o
 UTIL   = wall_time.o cmdLine.o
 
 .PHONY : default
